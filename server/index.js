@@ -18,15 +18,17 @@ const allowedOrigins = [
   "http://localhost:5173",
   "http://127.0.0.1:5173",
   "http://0.0.0.0:5173",
+  "https://code-collab-platform-ten.vercel.app",
   "https://code-collab-delta-umber.vercel.app",
 ];
 
 const isOriginAllowed = (origin) => {
   if (!origin) return true;
   if (allowedOrigins.includes(origin)) return true;
-  
-  // Allow localhost/127.0.0.1 on any port, and LAN private network IPs (192.168.x.x, 10.x.x.x, 172.x.x)
+
+  // Allow any Vercel deployment frontend for this project, plus local/LAN dev origins.
   return (
+    /^https:\/\/.*\.vercel\.app$/i.test(origin) ||
     origin.startsWith("http://localhost:") ||
     origin.startsWith("http://127.0.0.1:") ||
     origin.startsWith("http://192.168.") ||
