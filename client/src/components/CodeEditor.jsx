@@ -92,7 +92,42 @@ function CustomCodeEditor({
         fileName,
         code,
       });
-      setOutput(res.data.output || "Execution completed successfully with no output.");
+
+      const payload = res.data || {};
+      const normalizeOutputValue = (value) => {
+        if (typeof value === "string") return value.trim();
+        if (value && typeof value === "object") {
+          const nested = [
+            value.stdout,
+            value.stderr,
+            value.compileOutput,
+            value.compile_output,
+            value.output,
+            value.result,
+            value.data,
+          ]
+            .map((entry) => normalizeOutputValue(entry))
+            .filter(Boolean)
+            .join("\n\n")
+            .trim();
+          return nested;
+        }
+        return "";
+      };
+
+      const stdout = normalizeOutputValue(payload.stdout || payload.output || "");
+      const stderr = normalizeOutputValue(payload.stderr || "");
+      const compileOutput = normalizeOutputValue(payload.compileOutput || payload.compile_output || "");
+      const status = payload.status || "Completed";
+
+      const outputText = [stdout, stderr, compileOutput].filter(Boolean).join("\n\n").trim();
+
+      setOutput(
+        outputText ||
+          (status && status !== "Completed"
+            ? `Execution status: ${status}`
+            : "Execution completed successfully with no output.")
+      );
     } catch (err) {
       console.error(err);
       setOutput(

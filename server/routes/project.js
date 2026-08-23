@@ -266,40 +266,95 @@ const oneCompilerCandidateBodies = [
 ];
 
 const extractOneCompilerOutput = (payload) => {
-  if (!payload || typeof payload !== "object") return { stdout: "", stderr: "", compileOutput: "", status: "Unknown" };
+  if (!payload || typeof payload !== "object") {
+    return { stdout: "", stderr: "", compileOutput: "", status: "Unknown" };
+  }
 
-  const candidates = [
-    payload.output,
-    payload.stdout,
-    payload.stderr,
-    payload.result,
-    payload.data,
-    payload.response,
-    payload.message,
-    payload.compile_output,
-    payload.compileOutput,
+  const candidateKeys = [
+    "stdout",
+    "stderr",
+    "compile_output",
+    "compileOutput",
+    "output",
+    "result",
+    "data",
+    "response",
+    "message",
+    "status",
+    "state",
+    "run",
+    "execution",
   ];
 
-  for (const candidate of candidates) {
-    if (typeof candidate === "string" && candidate.trim()) return { stdout: candidate, stderr: "", compileOutput: "", status: payload.status || payload.state || "Completed" };
-    if (candidate && typeof candidate === "object") {
-      const nested = extractOneCompilerOutput(candidate);
-      if (nested.stdout || nested.stderr || nested.compileOutput || nested.status) return nested;
+  const visited = new Set();
+
+  const readString = (value) => {
+    if (typeof value !== "string") return "";
+    const trimmed = value.trim();
+    return trimmed;
+  };
+
+  const readNested = (node) => {
+    if (!node || typeof node !== "object") {
+      return { stdout: "", stderr: "", compileOutput: "", status: "Unknown" };
     }
-  }
 
-  if (payload.output && typeof payload.output === "object") {
-    return extractOneCompilerOutput(payload.output);
-  }
+    if (visited.has(node)) {
+      return { stdout: "", stderr: "", compileOutput: "", status: "Unknown" };
+    }
+    visited.add(node);
 
-  const stdout = typeof payload.stdout === "string" ? payload.stdout : "";
-  const stderr = typeof payload.stderr === "string" ? payload.stderr : "";
-  const compileOutput = typeof payload.compile_output === "string" ? payload.compile_output : typeof payload.compileOutput === "string" ? payload.compileOutput : "";
+    const directStdout = readString(node.stdout);
+    const directStderr = readString(node.stderr);
+    const directCompile = readString(node.compile_output || node.compileOutput);
+    const directStatus = readString(node.status || node.state || node.message || "");
+
+    if (directStdout || directStderr || directCompile) {
+      return {
+        stdout: directStdout,
+        stderr: directStderr,
+        compileOutput: directCompile,
+        status: directStatus || "Completed",
+      };
+    }
+
+    for (const key of candidateKeys) {
+      const value = node[key];
+      if (typeof value === "string" && value.trim()) {
+        return {
+          stdout: key === "stdout" ? value.trim() : "",
+          stderr: key === "stderr" ? value.trim() : "",
+          compileOutput: key === "compile_output" || key === "compileOutput" ? value.trim() : "",
+          status: node.status || node.state || "Completed",
+        };
+      }
+
+      if (value && typeof value === "object") {
+        const nested = readNested(value);
+        if (nested.stdout || nested.stderr || nested.compileOutput) {
+          return nested;
+        }
+      }
+    }
+
+    for (const value of Object.values(node)) {
+      if (value && typeof value === "object") {
+        const nested = readNested(value);
+        if (nested.stdout || nested.stderr || nested.compileOutput) {
+          return nested;
+        }
+      }
+    }
+
+    return { stdout: "", stderr: "", compileOutput: "", status: directStatus || "Completed" };
+  };
+
+  const output = readNested(payload);
   return {
-    stdout,
-    stderr,
-    compileOutput,
-    status: payload.status || payload.state || "Completed",
+    stdout: output.stdout || "",
+    stderr: output.stderr || "",
+    compileOutput: output.compileOutput || "",
+    status: output.status || "Completed",
   };
 };
 
@@ -338,12 +393,14 @@ const executeOneCompiler = async (language, code, stdin) => {
         }
 
         const output = extractOneCompilerOutput(parsed);
+        const combinedOutput = [output.stdout, output.stderr, output.compileOutput].filter(Boolean).join("\n\n").trim();
         return {
           success: true,
           status: output.status || "Completed",
           stdout: output.stdout || "",
           stderr: output.stderr || "",
           compileOutput: output.compileOutput || "",
+          output: combinedOutput,
           raw: parsed,
         };
       } catch (error) {
@@ -605,12 +662,15 @@ router.post("/run-code", async (req, res) => {
 
     const success = statusId === 3;
 
+    const combinedOutput = [stdout, stderr, compileOutput].filter(Boolean).join("\n\n").trim();
+
     return res.json({
       success,
       status: statusLabel,
       stdout,
       stderr,
       compileOutput,
+      output: combinedOutput,
       time: statusResult.time ?? null,
       memory: statusResult.memory ?? null,
       token,
