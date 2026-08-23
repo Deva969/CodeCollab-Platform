@@ -76,10 +76,27 @@ function CustomCodeEditor({
 
   // Allow user to override detected language with a selector (keeps detected as default)
   const [selectedLanguage, setSelectedLanguage] = useState(language);
+  const [languages, setLanguages] = useState([]); // fetched from server (Judge0 mapping)
+
   useEffect(() => {
     // update selectedLanguage when fileName changes (keep manual selection if user changed it)
     setSelectedLanguage(getLanguageFromExtension(fileName));
   }, [fileName]);
+
+  // Fetch available Judge0 languages mapping from server and fall back to static list
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        const res = await axios.get(`${API_URL}/api/project/judge0-languages`);
+        if (mounted && Array.isArray(res.data)) setLanguages(res.data);
+      } catch (err) {
+        // Ignore — keep languages empty so UI falls back to defaults
+        console.warn("Could not fetch judge0 languages:", err?.message || err);
+      }
+    })();
+    return () => (mounted = false);
+  }, []);
 
   // Give a small visual saving feedback when code updates
   useEffect(() => {
@@ -268,15 +285,25 @@ function CustomCodeEditor({
               onChange={(e) => setSelectedLanguage(e.target.value)}
               className="text-[10px] px-2 py-0.5 rounded bg-indigo-500/10 text-indigo-400 font-mono font-medium border border-indigo-500/20 uppercase tracking-wider appearance-none"
             >
-              <option value="javascript">JavaScript</option>
-              <option value="python">Python</option>
-              <option value="java">Java</option>
-              <option value="c">C</option>
-              <option value="cpp">C++</option>
-              <option value="go">Go</option>
-              <option value="rust">Rust</option>
-              <option value="ruby">Ruby</option>
-              <option value="php">PHP</option>
+              {languages && languages.length > 0 ? (
+                languages.map((l) => (
+                  <option key={l.key} value={l.key}>
+                    {l.name}{!l.available ? ' (unavailable)' : ''}
+                  </option>
+                ))
+              ) : (
+                <>
+                  <option value="javascript">JavaScript</option>
+                  <option value="python">Python</option>
+                  <option value="java">Java</option>
+                  <option value="c">C</option>
+                  <option value="cpp">C++</option>
+                  <option value="go">Go</option>
+                  <option value="rust">Rust</option>
+                  <option value="ruby">Ruby</option>
+                  <option value="php">PHP</option>
+                </>
+              )}
             </select>
           </div>
           {isSaving && (

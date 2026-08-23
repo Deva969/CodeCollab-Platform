@@ -116,6 +116,69 @@ router.get("/invite-project/:token", async (req, res) => {
   }
 });
 
+// Endpoint to expose Judge0 language mappings to frontend
+router.get("/judge0-languages", async (req, res) => {
+  try {
+    const JUDGE0_URL = process.env.JUDGE0_URL;
+
+    // Server-side canonical mapping of friendly keys to Judge0 IDs
+    const languageMap = {
+      javascript: 63,
+      python: 71,
+      java: 62,
+      c: 50,
+      cpp: 54,
+      go: 60,
+      rust: 73,
+      ruby: 72,
+      php: 68,
+    };
+
+    const friendlyNames = {
+      javascript: "JavaScript",
+      python: "Python",
+      java: "Java",
+      c: "C",
+      cpp: "C++",
+      go: "Go",
+      rust: "Rust",
+      ruby: "Ruby",
+      php: "PHP",
+    };
+
+    if (JUDGE0_URL) {
+      const url = `${JUDGE0_URL.replace(/\/$/, "")}/languages`;
+      const resp = await fetch(url);
+      if (!resp.ok) {
+        return res.status(502).json({ message: "Failed to fetch languages from Judge0" });
+      }
+      const judgeLangs = await resp.json(); // array of { id, name, ... }
+
+      const result = Object.keys(languageMap).map((key) => ({
+        key,
+        name: friendlyNames[key] || key,
+        judge0_id: languageMap[key],
+        available: judgeLangs.some((l) => Number(l.id) === Number(languageMap[key])),
+      }));
+
+      return res.json(result);
+    }
+
+    // Fallback: return mapping without availability info
+    const fallback = Object.keys(languageMap).map((key) => ({
+      key,
+      name: friendlyNames[key] || key,
+      judge0_id: languageMap[key],
+      available: false,
+    }));
+
+    return res.json(fallback);
+  } catch (error) {
+    console.error("judge0-languages error:", error);
+    return res.status(500).json({ message: "Server Error" });
+  }
+});
+
 router.post("/invite-join/:token", verifyToken, async (req, res) => {
   try {
     const { token } = req.params;
