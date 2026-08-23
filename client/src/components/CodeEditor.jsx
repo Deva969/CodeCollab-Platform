@@ -74,6 +74,13 @@ function CustomCodeEditor({
 
   const language = getLanguageFromExtension(fileName);
 
+  // Allow user to override detected language with a selector (keeps detected as default)
+  const [selectedLanguage, setSelectedLanguage] = useState(language);
+  useEffect(() => {
+    // update selectedLanguage when fileName changes (keep manual selection if user changed it)
+    setSelectedLanguage(getLanguageFromExtension(fileName));
+  }, [fileName]);
+
   // Give a small visual saving feedback when code updates
   useEffect(() => {
     if (!code) return;
@@ -87,7 +94,7 @@ function CustomCodeEditor({
   // Execute JavaScript or Python code on the backend
   const triggerLocalRun = async () => {
     setOutput("Running code on backend...");
-    const lang = getLanguageFromExtension(fileName);
+    const lang = selectedLanguage || getLanguageFromExtension(fileName);
 
     if (lang === "javascript" || lang === "python") {
       try {
@@ -253,9 +260,25 @@ function CustomCodeEditor({
       <div className="h-12 border-b border-gray-850 flex items-center justify-between px-6 bg-[#0e0e11] text-white select-none shrink-0">
         <div className="flex items-center gap-3">
           <span className="text-xs font-mono text-gray-400 font-semibold tracking-wide bg-gray-900 px-2.5 py-1 rounded-md border border-gray-800/80">{fileName}</span>
-          <span className="text-[10px] px-2 py-0.5 rounded bg-indigo-500/10 text-indigo-400 font-mono font-medium border border-indigo-500/20 uppercase tracking-wider">
-            {language}
-          </span>
+
+          {/* Language selector: shows detected language but lets user choose runtime/language for execution */}
+          <div className="relative">
+            <select
+              value={selectedLanguage}
+              onChange={(e) => setSelectedLanguage(e.target.value)}
+              className="text-[10px] px-2 py-0.5 rounded bg-indigo-500/10 text-indigo-400 font-mono font-medium border border-indigo-500/20 uppercase tracking-wider appearance-none"
+            >
+              <option value="javascript">JavaScript</option>
+              <option value="python">Python</option>
+              <option value="java">Java</option>
+              <option value="c">C</option>
+              <option value="cpp">C++</option>
+              <option value="go">Go</option>
+              <option value="rust">Rust</option>
+              <option value="ruby">Ruby</option>
+              <option value="php">PHP</option>
+            </select>
+          </div>
           {isSaving && (
             <span className="text-[11px] text-indigo-400 font-mono flex items-center gap-1.5">
               <span className="w-1.5 h-1.5 rounded-full bg-indigo-500 animate-ping"></span>
