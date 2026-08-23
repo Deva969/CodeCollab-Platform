@@ -165,31 +165,194 @@ const normalizeJudge0Token = (value) =>
 
 const getJudge0BaseUrl = () => (ENV.JUDGE0_API_URL || ENV.JUDGE0_URL || "").replace(/\/$/, "");
 
+const parseExtraHeaders = () => {
+  const raw = (ENV.JUDGE0_EXTRA_HEADERS || "").trim();
+  if (!raw) return {};
+
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+};
+
 const getJudge0Headers = () => {
   const apiKey = (ENV.JUDGE0_API_KEY || "").trim();
   const headerName = (ENV.JUDGE0_AUTH_HEADER || "X-Auth-Token").trim();
   const authType = (ENV.JUDGE0_AUTH_TYPE || "token").trim().toLowerCase();
+  const hostHeaderName = (ENV.JUDGE0_HOST_HEADER || "x-rapidapi-host").trim();
+  const hostValue = (ENV.JUDGE0_HOST || "").trim();
+  const extraHeaders = parseExtraHeaders();
 
-  if (!apiKey) return { "Content-Type": "application/json" };
+  const headers = {
+    "Content-Type": "application/json",
+    ...extraHeaders,
+  };
+
+  if (!apiKey) {
+    if (hostValue && hostHeaderName) {
+      headers[hostHeaderName] = hostValue;
+    }
+    return headers;
+  }
 
   if (authType === "bearer") {
-    return {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    };
+    headers.Authorization = `Bearer ${apiKey}`;
+  } else if (headerName.toLowerCase() === "authorization") {
+    headers.Authorization = `Bearer ${apiKey}`;
+  } else {
+    headers[headerName] = apiKey;
   }
 
-  if (headerName.toLowerCase() === "authorization") {
-    return {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    };
+  if (hostValue && hostHeaderName) {
+    headers[hostHeaderName] = hostValue;
   }
 
-  return {
+  return headers;
+};
+
+const getOneCompilerBaseUrl = () => (ENV.ONECOMPILER_API_URL || "").replace(/\/$/, "");
+
+const getOneCompilerHeaders = () => {
+  const apiKey = (ENV.ONECOMPILER_API_KEY || "").trim();
+  const authHeader = (ENV.ONECOMPILER_AUTH_HEADER || "Authorization").trim();
+  const authType = (ENV.ONECOMPILER_AUTH_TYPE || "bearer").trim().toLowerCase();
+  const extraHeaders = (() => {
+    const raw = (ENV.ONECOMPILER_EXTRA_HEADERS || "").trim();
+    if (!raw) return {};
+    try {
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch {
+      return {};
+    }
+  })();
+
+  const headers = {
     "Content-Type": "application/json",
-    [headerName]: apiKey,
+    ...extraHeaders,
   };
+
+  if (!apiKey) return headers;
+
+  if (authType === "bearer" || authHeader.toLowerCase() === "authorization") {
+    headers.Authorization = `Bearer ${apiKey}`;
+  } else {
+    headers[authHeader] = apiKey;
+  }
+
+  return headers;
+};
+
+const oneCompilerCandidateEndpoints = [
+  "/api/execute",
+  "/api/compile",
+  "/api/run",
+  "/api/v1/execute",
+  "/api/v1/run",
+  "/execute",
+  "/run",
+  "/api/compile-result",
+];
+
+const oneCompilerCandidateBodies = [
+  (language, code, stdin) => ({ language, code, stdin }),
+  (language, code, stdin) => ({ language, source: code, stdin }),
+  (language, code, stdin) => ({ language, source_code: code, stdin }),
+  (language, code, stdin) => ({ language, script: code, stdin }),
+  (language, code, stdin) => ({ code, stdin, language }),
+  (language, code, stdin) => ({ source: code, stdin, language }),
+];
+
+const extractOneCompilerOutput = (payload) => {
+  if (!payload || typeof payload !== "object") return { stdout: "", stderr: "", compileOutput: "", status: "Unknown" };
+
+  const candidates = [
+    payload.output,
+    payload.stdout,
+    payload.stderr,
+    payload.result,
+    payload.data,
+    payload.response,
+    payload.message,
+    payload.compile_output,
+    payload.compileOutput,
+  ];
+
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim()) return { stdout: candidate, stderr: "", compileOutput: "", status: payload.status || payload.state || "Completed" };
+    if (candidate && typeof candidate === "object") {
+      const nested = extractOneCompilerOutput(candidate);
+      if (nested.stdout || nested.stderr || nested.compileOutput || nested.status) return nested;
+    }
+  }
+
+  if (payload.output && typeof payload.output === "object") {
+    return extractOneCompilerOutput(payload.output);
+  }
+
+  const stdout = typeof payload.stdout === "string" ? payload.stdout : "";
+  const stderr = typeof payload.stderr === "string" ? payload.stderr : "";
+  const compileOutput = typeof payload.compile_output === "string" ? payload.compile_output : typeof payload.compileOutput === "string" ? payload.compileOutput : "";
+  return {
+    stdout,
+    stderr,
+    compileOutput,
+    status: payload.status || payload.state || "Completed",
+  };
+};
+
+const executeOneCompiler = async (language, code, stdin) => {
+  const baseUrl = getOneCompilerBaseUrl();
+  if (!baseUrl) {
+    throw new Error("OneCompiler API is not configured.");
+  }
+
+  const headers = getOneCompilerHeaders();
+  const requestBodies = oneCompilerCandidateBodies.map((builder) => builder(language, code, stdin));
+
+  let lastError = null;
+
+  for (const endpoint of oneCompilerCandidateEndpoints) {
+    const url = `${baseUrl}${endpoint}`;
+    for (const body of requestBodies) {
+      try {
+        const response = await fetch(url, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(body),
+        });
+
+        const text = await response.text();
+        const parsed = text ? (() => { try { return JSON.parse(text); } catch { return text; } })() : null;
+
+        if (!response.ok) {
+          lastError = `OneCompiler request failed at ${endpoint}: ${response.status} ${text}`;
+          continue;
+        }
+
+        if (!parsed) {
+          lastError = `OneCompiler responded without JSON at ${endpoint}`;
+          continue;
+        }
+
+        const output = extractOneCompilerOutput(parsed);
+        return {
+          success: true,
+          status: output.status || "Completed",
+          stdout: output.stdout || "",
+          stderr: output.stderr || "",
+          compileOutput: output.compileOutput || "",
+          raw: parsed,
+        };
+      } catch (error) {
+        lastError = error.message;
+      }
+    }
+  }
+
+  throw new Error(lastError || "OneCompiler execution failed.");
 };
 
 const fetchJudge0Languages = async () => {
@@ -354,10 +517,23 @@ router.post("/run-code", async (req, res) => {
     });
   }
 
+  const oneCompilerBaseUrl = getOneCompilerBaseUrl();
+  if (oneCompilerBaseUrl) {
+    try {
+      const result = await executeOneCompiler(detectedLanguage, code, stdin || "");
+      return res.json(result);
+    } catch (error) {
+      console.error("OneCompiler execution failed:", error);
+      return res.status(502).json({
+        error: "OneCompiler execution failed: " + error.message,
+      });
+    }
+  }
+
   const baseUrl = getJudge0BaseUrl();
   if (!baseUrl) {
     return res.status(500).json({
-      error: "Judge0 API is not configured. Add JUDGE0_API_URL and JUDGE0_API_KEY to the backend environment.",
+      error: "OneCompiler API is not configured. Add ONECOMPILER_API_URL and ONECOMPILER_API_KEY to the backend environment.",
     });
   }
 
