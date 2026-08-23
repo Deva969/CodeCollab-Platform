@@ -6,6 +6,12 @@ import { verifyToken } from "../middleware/verifyToken.js";
 import { exec } from "child_process";
 import fs from "fs";
 import path from "path";
+import {
+  JUDGE0_LANGUAGE_MAP,
+  LANGUAGE_LABELS,
+  SUPPORTED_RUNTIME_LANGUAGES,
+  getLanguageFromFileName,
+} from "../lib/languageConfig.js";
 
 const router = Router();
 
@@ -121,30 +127,7 @@ router.get("/judge0-languages", async (req, res) => {
   try {
     const JUDGE0_URL = process.env.JUDGE0_URL;
 
-    // Server-side canonical mapping of friendly keys to Judge0 IDs
-    const languageMap = {
-      javascript: 63,
-      python: 71,
-      java: 62,
-      c: 50,
-      cpp: 54,
-      go: 60,
-      rust: 73,
-      ruby: 72,
-      php: 68,
-    };
-
-    const friendlyNames = {
-      javascript: "JavaScript",
-      python: "Python",
-      java: "Java",
-      c: "C",
-      cpp: "C++",
-      go: "Go",
-      rust: "Rust",
-      ruby: "Ruby",
-      php: "PHP",
-    };
+    const entries = Object.entries(JUDGE0_LANGUAGE_MAP);
 
     if (JUDGE0_URL) {
       const url = `${JUDGE0_URL.replace(/\/$/, "")}/languages`;
@@ -152,23 +135,22 @@ router.get("/judge0-languages", async (req, res) => {
       if (!resp.ok) {
         return res.status(502).json({ message: "Failed to fetch languages from Judge0" });
       }
-      const judgeLangs = await resp.json(); // array of { id, name, ... }
+      const judgeLangs = await resp.json();
 
-      const result = Object.keys(languageMap).map((key) => ({
+      const result = entries.map(([key, value]) => ({
         key,
-        name: friendlyNames[key] || key,
-        judge0_id: languageMap[key],
-        available: judgeLangs.some((l) => Number(l.id) === Number(languageMap[key])),
+        name: LANGUAGE_LABELS[key] || value.name,
+        judge0_id: value.id,
+        available: judgeLangs.some((l) => Number(l.id) === Number(value.id)),
       }));
 
       return res.json(result);
     }
 
-    // Fallback: return mapping without availability info
-    const fallback = Object.keys(languageMap).map((key) => ({
+    const fallback = entries.map(([key, value]) => ({
       key,
-      name: friendlyNames[key] || key,
-      judge0_id: languageMap[key],
+      name: LANGUAGE_LABELS[key] || value.name,
+      judge0_id: value.id,
       available: false,
     }));
 
@@ -236,36 +218,29 @@ router.get("/files/:projectId", async (req, res) => {
 });
 
 router.post("/run-code", async (req, res) => {
-  const { language, code } = req.body;
+  const { language, fileName, code, stdin } = req.body;
+
   if (!code) {
     return res.status(400).json({ error: "No code provided." });
   }
 
-  // If JUDGE0_URL is configured, forward execution to Judge0 (safer sandboxed execution).
-  const JUDGE0_URL = process.env.JUDGE0_URL;
+  const detectedLanguage = (language || getLanguageFromFileName(fileName) || "").toLowerCase();
 
-  // Map common language keys to Judge0 language_ids. Extend as needed.
-  const languageMap = {
-    javascript: 63, // Node.js (JavaScript)
-    python: 71, // Python (3.x)
-    java: 62,
-    c: 50,
-    cpp: 54,
-    cpp11: 54,
-    go: 60,
-    rust: 73,
-    ruby: 72,
-    php: 68,
-  };
+  if (!detectedLanguage || !SUPPORTED_RUNTIME_LANGUAGES.has(detectedLanguage)) {
+    return res.status(400).json({
+      error: `Language ${detectedLanguage || fileName || "unknown"} is not supported for code execution.`,
+    });
+  }
+
+  const JUDGE0_URL = process.env.JUDGE0_URL;
 
   try {
     if (JUDGE0_URL) {
-      const language_id = languageMap[language] || languageMap[language.toLowerCase()];
-      if (!language_id) {
-        return res.status(400).json({ error: `Language ${language} not supported by Judge0 mapping.` });
+      const judge0Language = JUDGE0_LANGUAGE_MAP[detectedLanguage];
+      if (!judge0Language) {
+        return res.status(400).json({ error: `Language ${detectedLanguage} not supported by Judge0 mapping.` });
       }
 
-      // Use the Judge0 submissions endpoint (wait=true for synchronous response)
       const submissionsUrl = `${JUDGE0_URL.replace(/\/$/, "")}/submissions?base64_encoded=false&wait=true`;
 
       const response = await fetch(submissionsUrl, {
@@ -273,9 +248,10 @@ router.post("/run-code", async (req, res) => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           source_code: code,
-          language_id,
-          stdin: "",
+          language_id: judge0Language.id,
+          stdin: stdin || "",
           cpu_time_limit: 5,
+          memory_limit: 512000,
         }),
       });
 
@@ -285,42 +261,45 @@ router.post("/run-code", async (req, res) => {
       }
 
       const result = await response.json();
-      // Combine possible outputs
-      const output = (result.stdout || "") + (result.stderr || "") + (result.compile_output || "");
-      return res.json({ output: output || "✓ Execution completed (Judge0) with no output.", raw: result });
+      const output = [result.stdout, result.stderr, result.compile_output, result.message]
+        .filter(Boolean)
+        .join("\n");
+
+      return res.json({
+        output: output || "Execution completed successfully with no output.",
+        raw: result,
+      });
     }
 
-    // Fallback: local execution (existing behavior). Create a temporary folder inside the server directory
     const tempDir = path.join(process.cwd(), "temp_runs");
     if (!fs.existsSync(tempDir)) {
       fs.mkdirSync(tempDir, { recursive: true });
     }
 
     const fileId = crypto.randomBytes(8).toString("hex");
-    let fileName = "";
+    let fileNameForRun = "";
     let runCommand = "";
 
-    switch (language) {
+    switch (detectedLanguage) {
       case "python":
-        fileName = `run_${fileId}.py`;
-        runCommand = `python "${path.join(tempDir, fileName)}"`;
+        fileNameForRun = `run_${fileId}.py`;
+        runCommand = `python "${path.join(tempDir, fileNameForRun)}"`;
         break;
       case "javascript":
-        fileName = `run_${fileId}.js`;
-        runCommand = `node "${path.join(tempDir, fileName)}"`;
+      case "typescript":
+        fileNameForRun = `run_${fileId}.js`;
+        runCommand = `node "${path.join(tempDir, fileNameForRun)}"`;
         break;
       default:
-        return res.status(400).json({ error: `Language ${language} not supported for backend execution.` });
+        return res.status(400).json({ error: `Language ${detectedLanguage} not supported for local backend execution.` });
     }
 
-    const filePath = path.join(tempDir, fileName);
+    const filePath = path.join(tempDir, fileNameForRun);
 
     try {
       fs.writeFileSync(filePath, code);
 
-      // Run the script with a 5-second timeout limit
       exec(runCommand, { timeout: 5000 }, (error, stdout, stderr) => {
-        // Clean up the temp file immediately
         fs.unlink(filePath, () => {});
 
         if (error && error.killed) {
@@ -328,17 +307,17 @@ router.post("/run-code", async (req, res) => {
         }
 
         const output = stdout + stderr;
-        res.json({ output: output || "✓ Execution completed successfully with no console output." });
+        return res.json({ output: output || "Execution completed successfully with no output." });
       });
     } catch (err) {
       if (fs.existsSync(filePath)) {
         fs.unlinkSync(filePath);
       }
-      res.status(500).json({ error: "Server execution error: " + err.message });
+      return res.status(500).json({ error: "Server execution error: " + err.message });
     }
   } catch (err) {
     console.error("Run-code handler error:", err);
-    res.status(500).json({ error: "Execution failed: " + err.message });
+    return res.status(500).json({ error: "Execution failed: " + err.message });
   }
 });
 

@@ -3,6 +3,11 @@ import Editor from "@monaco-editor/react";
 import axios from "axios";
 import { resolveApiUrl } from "../config";
 import {
+  LANGUAGE_LABELS,
+  SUPPORTED_RUNTIME_LANGUAGES,
+  getLanguageFromFileName,
+} from "../languageConfig";
+import {
   VscPlay,
   VscPulse,
   VscSearch,
@@ -40,63 +45,11 @@ function CustomCodeEditor({
   const [aiLoading, setAiLoading] = useState(false);
   const [activeSidePanel, setActiveSidePanel] = useState(null); // 'review' | 'complexity' | null
 
-  // Detect language based on file extension
-  const getLanguageFromExtension = (name) => {
-    if (!name) return "javascript";
-    const ext = name.split(".").pop().toLowerCase();
-    switch (ext) {
-      case "js":
-      case "jsx":
-        return "javascript";
-      case "ts":
-      case "tsx":
-        return "typescript";
-      case "html":
-        return "html";
-      case "css":
-        return "css";
-      case "json":
-        return "json";
-      case "md":
-        return "markdown";
-      case "py":
-        return "python";
-      case "java":
-        return "java";
-      case "cpp":
-      case "cc":
-      case "h":
-        return "cpp";
-      default:
-        return "javascript";
-    }
-  };
-
-  const language = getLanguageFromExtension(fileName);
-
-  // Allow user to override detected language with a selector (keeps detected as default)
-  const [selectedLanguage, setSelectedLanguage] = useState(language);
-  const [languages, setLanguages] = useState([]); // fetched from server (Judge0 mapping)
-
-  useEffect(() => {
-    // update selectedLanguage when fileName changes (keep manual selection if user changed it)
-    setSelectedLanguage(getLanguageFromExtension(fileName));
-  }, [fileName]);
-
-  // Fetch available Judge0 languages mapping from server and fall back to static list
-  useEffect(() => {
-    let mounted = true;
-    (async () => {
-      try {
-        const res = await axios.get(`${API_URL}/api/project/judge0-languages`);
-        if (mounted && Array.isArray(res.data)) setLanguages(res.data);
-      } catch (err) {
-        // Ignore — keep languages empty so UI falls back to defaults
-        console.warn("Could not fetch judge0 languages:", err?.message || err);
-      }
-    })();
-    return () => (mounted = false);
-  }, []);
+  const detectedLanguage = getLanguageFromFileName(fileName);
+  const language = detectedLanguage || "javascript";
+  const editorLanguage = detectedLanguage || "plaintext";
+  const canRunCode = Boolean(detectedLanguage) && SUPPORTED_RUNTIME_LANGUAGES.has(detectedLanguage);
+  const detectedLanguageName = detectedLanguage ? LANGUAGE_LABELS[detectedLanguage] : "";
 
   // Give a small visual saving feedback when code updates
   useEffect(() => {
@@ -108,28 +61,30 @@ function CustomCodeEditor({
     return () => clearTimeout(timer);
   }, [code]);
 
-  // Execute JavaScript or Python code on the backend
   const triggerLocalRun = async () => {
-    setOutput("Running code on backend...");
-    const lang = selectedLanguage || getLanguageFromExtension(fileName);
+    const lang = getLanguageFromFileName(fileName);
 
-    if (lang === "javascript" || lang === "python") {
-      try {
-        const res = await axios.post(`${API_URL}/api/project/run-code`, {
-          language: lang,
-          code,
-        });
-        setOutput(res.data.output);
-      } catch (err) {
-        console.error(err);
-        setOutput(
-          "Error: " +
-            (err.response?.data?.error ||
-              "Failed to execute code on backend. Please ensure the backend is running.")
-        );
-      }
-    } else {
-      setOutput(`Execution for ${lang} is not supported. Use HTML/CSS for browser web preview.`);
+    if (!lang || !SUPPORTED_RUNTIME_LANGUAGES.has(lang)) {
+      setOutput("Run Code is only available for supported source files.");
+      return;
+    }
+
+    setOutput("Running code on backend...");
+
+    try {
+      const res = await axios.post(`${API_URL}/api/project/run-code`, {
+        language: lang,
+        fileName,
+        code,
+      });
+      setOutput(res.data.output || "Execution completed successfully with no output.");
+    } catch (err) {
+      console.error(err);
+      setOutput(
+        "Error: " +
+          (err.response?.data?.error ||
+            "Failed to execute code on backend. Please ensure the backend is running.")
+      );
     }
   };
 
@@ -278,34 +233,11 @@ function CustomCodeEditor({
         <div className="flex items-center gap-3">
           <span className="text-xs font-mono text-gray-400 font-semibold tracking-wide bg-gray-900 px-2.5 py-1 rounded-md border border-gray-800/80">{fileName}</span>
 
-          {/* Language selector: shows detected language but lets user choose runtime/language for execution */}
-          <div className="relative">
-            <select
-              value={selectedLanguage}
-              onChange={(e) => setSelectedLanguage(e.target.value)}
-              className="text-[10px] px-2 py-0.5 rounded bg-indigo-500/10 text-indigo-400 font-mono font-medium border border-indigo-500/20 uppercase tracking-wider appearance-none"
-            >
-              {languages && languages.length > 0 ? (
-                languages.map((l) => (
-                  <option key={l.key} value={l.key}>
-                    {l.name}{!l.available ? ' (unavailable)' : ''}
-                  </option>
-                ))
-              ) : (
-                <>
-                  <option value="javascript">JavaScript</option>
-                  <option value="python">Python</option>
-                  <option value="java">Java</option>
-                  <option value="c">C</option>
-                  <option value="cpp">C++</option>
-                  <option value="go">Go</option>
-                  <option value="rust">Rust</option>
-                  <option value="ruby">Ruby</option>
-                  <option value="php">PHP</option>
-                </>
-              )}
-            </select>
-          </div>
+          {detectedLanguageName && (
+            <span className="text-[10px] px-2 py-0.5 rounded bg-indigo-500/10 text-indigo-400 font-mono font-medium border border-indigo-500/20 uppercase tracking-wider">
+              {detectedLanguageName}
+            </span>
+          )}
           {isSaving && (
             <span className="text-[11px] text-indigo-400 font-mono flex items-center gap-1.5">
               <span className="w-1.5 h-1.5 rounded-full bg-indigo-500 animate-ping"></span>
@@ -358,7 +290,7 @@ function CustomCodeEditor({
             <span>Analyze Complexity</span>
           </button>
 
-          {(language === "javascript" || language === "python") && (
+          {canRunCode && (
             <button
               onClick={runCode}
               className="bg-emerald-600 hover:bg-emerald-700 text-white font-semibold px-4 py-1.5 rounded-lg text-xs transition-all duration-200 shadow-md shadow-emerald-600/15 cursor-pointer flex items-center gap-1.5"
@@ -379,9 +311,8 @@ function CustomCodeEditor({
           <Editor
             height="100%"
             theme="vs-dark"
-            language={language}
-            value={code}
-            onChange={(value) => setCode(value || "")}
+            language={editorLanguage}
+            value={code}            onChange={(value) => setCode(value || "")}
             options={{
               fontSize: 13,
               fontFamily: "'Fira Code', 'Operator Mono', Menlo, Monaco, 'Courier New', monospace",
@@ -612,7 +543,11 @@ function CustomCodeEditor({
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-500/60 animate-pulse"></span>
                 <span>CodeCollab Terminal Shell v1.2.0</span>
               </div>
-              <p className="text-[11px] text-gray-600 font-medium">Type Node.js (JavaScript) or Python scripts and click "Run Code" to observe logs.</p>
+              <p className="text-[11px] text-gray-600 font-medium">
+                {detectedLanguageName
+                  ? `Detected language: ${detectedLanguageName}. Click "Run Code" to execute it.`
+                  : 'Write your code and click "Run Code" to execute it.'}
+              </p>
             </div>
           )}
         </div>
