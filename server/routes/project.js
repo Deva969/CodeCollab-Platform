@@ -178,51 +178,104 @@ router.post("/run-code", async (req, res) => {
     return res.status(400).json({ error: "No code provided." });
   }
 
-  // Create a temporary folder inside the server directory
-  const tempDir = path.join(process.cwd(), "temp_runs");
-  if (!fs.existsSync(tempDir)) {
-    fs.mkdirSync(tempDir, { recursive: true });
-  }
+  // If JUDGE0_URL is configured, forward execution to Judge0 (safer sandboxed execution).
+  const JUDGE0_URL = process.env.JUDGE0_URL;
 
-  const fileId = crypto.randomBytes(8).toString("hex");
-  let fileName = "";
-  let runCommand = "";
-
-  switch (language) {
-    case "python":
-      fileName = `run_${fileId}.py`;
-      runCommand = `python "${path.join(tempDir, fileName)}"`;
-      break;
-    case "javascript":
-      fileName = `run_${fileId}.js`;
-      runCommand = `node "${path.join(tempDir, fileName)}"`;
-      break;
-    default:
-      return res.status(400).json({ error: `Language ${language} not supported for backend execution.` });
-  }
-
-  const filePath = path.join(tempDir, fileName);
+  // Map common language keys to Judge0 language_ids. Extend as needed.
+  const languageMap = {
+    javascript: 63, // Node.js (JavaScript)
+    python: 71, // Python (3.x)
+    java: 62,
+    c: 50,
+    cpp: 54,
+    cpp11: 54,
+    go: 60,
+    rust: 73,
+    ruby: 72,
+    php: 68,
+  };
 
   try {
-    fs.writeFileSync(filePath, code);
-
-    // Run the script with a 5-second timeout limit
-    exec(runCommand, { timeout: 5000 }, (error, stdout, stderr) => {
-      // Clean up the temp file immediately
-      fs.unlink(filePath, () => {});
-
-      if (error && error.killed) {
-        return res.json({ output: "Error: Execution timed out (exceeded 5 seconds limit)." });
+    if (JUDGE0_URL) {
+      const language_id = languageMap[language] || languageMap[language.toLowerCase()];
+      if (!language_id) {
+        return res.status(400).json({ error: `Language ${language} not supported by Judge0 mapping.` });
       }
 
-      const output = stdout + stderr;
-      res.json({ output: output || "✓ Execution completed successfully with no console output." });
-    });
-  } catch (err) {
-    if (fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
+      // Use the Judge0 submissions endpoint (wait=true for synchronous response)
+      const submissionsUrl = `${JUDGE0_URL.replace(/\/$/, "")}/submissions?base64_encoded=false&wait=true`;
+
+      const response = await fetch(submissionsUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          source_code: code,
+          language_id,
+          stdin: "",
+          cpu_time_limit: 5,
+        }),
+      });
+
+      if (!response.ok) {
+        const txt = await response.text();
+        return res.status(502).json({ error: `Judge0 error: ${response.status} ${txt}` });
+      }
+
+      const result = await response.json();
+      // Combine possible outputs
+      const output = (result.stdout || "") + (result.stderr || "") + (result.compile_output || "");
+      return res.json({ output: output || "✓ Execution completed (Judge0) with no output.", raw: result });
     }
-    res.status(500).json({ error: "Server execution error: " + err.message });
+
+    // Fallback: local execution (existing behavior). Create a temporary folder inside the server directory
+    const tempDir = path.join(process.cwd(), "temp_runs");
+    if (!fs.existsSync(tempDir)) {
+      fs.mkdirSync(tempDir, { recursive: true });
+    }
+
+    const fileId = crypto.randomBytes(8).toString("hex");
+    let fileName = "";
+    let runCommand = "";
+
+    switch (language) {
+      case "python":
+        fileName = `run_${fileId}.py`;
+        runCommand = `python "${path.join(tempDir, fileName)}"`;
+        break;
+      case "javascript":
+        fileName = `run_${fileId}.js`;
+        runCommand = `node "${path.join(tempDir, fileName)}"`;
+        break;
+      default:
+        return res.status(400).json({ error: `Language ${language} not supported for backend execution.` });
+    }
+
+    const filePath = path.join(tempDir, fileName);
+
+    try {
+      fs.writeFileSync(filePath, code);
+
+      // Run the script with a 5-second timeout limit
+      exec(runCommand, { timeout: 5000 }, (error, stdout, stderr) => {
+        // Clean up the temp file immediately
+        fs.unlink(filePath, () => {});
+
+        if (error && error.killed) {
+          return res.json({ output: "Error: Execution timed out (exceeded 5 seconds limit)." });
+        }
+
+        const output = stdout + stderr;
+        res.json({ output: output || "✓ Execution completed successfully with no console output." });
+      });
+    } catch (err) {
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+      }
+      res.status(500).json({ error: "Server execution error: " + err.message });
+    }
+  } catch (err) {
+    console.error("Run-code handler error:", err);
+    res.status(500).json({ error: "Execution failed: " + err.message });
   }
 });
 

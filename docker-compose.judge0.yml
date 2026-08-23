@@ -1,0 +1,14 @@
+version: "3.8"
+services:
+  judge0:
+    image: judge0/api:latest
+    container_name: judge0-api
+    restart: unless-stopped
+    ports:
+      - "2358:2358"
+    environment:
+      - "RUST_LOG=info"
+    # For production, configure persistent storage, resource limits and secure networking.
+
+# Note: This simple compose runs the Judge0 API on port 2358.
+# For production use, review Judge0 docs and run the 'extra' image or the recommended deployment.

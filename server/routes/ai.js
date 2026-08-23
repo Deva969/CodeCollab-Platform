@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { verifyToken } from "../middleware/verifyToken.js";
+import { ENV } from "../lib/ENV.js";
 
 const router = Router();
 
@@ -10,10 +11,10 @@ router.post("/ai/review", verifyToken, async (req, res) => {
     return res.status(400).json({ error: "No code provided." });
   }
 
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey || apiKey.startsWith("your_gemini")) {
+  const apiKey = process.env.GEMINI_API_KEY || ENV.GEMINI_API_KEY;
+  if (!apiKey || apiKey.startsWith("your_gemini") || apiKey.includes("your_")) {
     return res.status(400).json({
-      error: "Gemini API Key is not configured. Please add GEMINI_API_KEY=your_key to server/.env file."
+      error: "Gemini API Key is not configured. Please add GEMINI_API_KEY=your_key to the backend environment."
     });
   }
 
@@ -31,7 +32,7 @@ The JSON object must match this schema:
 
   try {
     const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
       {
         method: "POST",
         headers: {
@@ -85,10 +86,10 @@ router.post("/ai/complexity", verifyToken, async (req, res) => {
     return res.status(400).json({ error: "No code provided." });
   }
 
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey || apiKey.startsWith("your_gemini")) {
+  const apiKey = process.env.GEMINI_API_KEY || ENV.GEMINI_API_KEY;
+  if (!apiKey || apiKey.startsWith("your_gemini") || apiKey.includes("your_")) {
     return res.status(400).json({
-      error: "Gemini API Key is not configured. Please add GEMINI_API_KEY=your_key to server/.env file."
+      error: "Gemini API Key is not configured. Please add GEMINI_API_KEY=your_key to the backend environment."
     });
   }
 
@@ -108,7 +109,7 @@ Note: Loops include for, while, do-while. Nested loops include loops inside loop
 
   try {
     const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
       {
         method: "POST",
         headers: {

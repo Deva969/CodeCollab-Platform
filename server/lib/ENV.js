@@ -6,4 +6,5 @@ export const ENV = {
   DB_URL: process.env.DB_URL,
   ACCESS_SECRET: process.env.ACCESS_SECRET,
   REFRESH_SECRET: process.env.REFRESH_SECRET,
+  GEMINI_API_KEY: process.env.GEMINI_API_KEY,
 };
