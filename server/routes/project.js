@@ -3,9 +3,7 @@ import Project from "../model/Project.js";
 import Message from "../model/Message.js";
 import crypto from "crypto";
 import { verifyToken } from "../middleware/verifyToken.js";
-import { exec } from "child_process";
-import fs from "fs";
-import path from "path";
+import { ENV } from "../lib/ENV.js";
 import {
   JUDGE0_LANGUAGE_MAP,
   LANGUAGE_LABELS,
@@ -122,20 +120,144 @@ router.get("/invite-project/:token", async (req, res) => {
   }
 });
 
+const JUDGE0_STATUS_MAP = {
+  1: "In Queue",
+  2: "Processing",
+  3: "Accepted",
+  4: "Wrong Answer",
+  5: "Time Limit Exceeded",
+  6: "Compilation Error",
+  7: "Runtime Error",
+  8: "Runtime Error",
+  9: "Internal Error",
+  10: "Exec Time Limit Exceeded",
+  11: "Memory Limit Exceeded",
+  12: "Output Limit Exceeded",
+  13: "Not Allowed",
+  14: "Hidden Test Failed",
+  15: "Rejected",
+  16: "Skipped",
+  17: "Unknown",
+};
+
+const JUDGE0_LANGUAGE_ALIASES = {
+  javascript: ["javascript", "nodejs", "node.js", "js"],
+  typescript: ["typescript", "ts"],
+  python: ["python", "python3", "py"],
+  c: ["c"],
+  cpp: ["cpp", "c++", "cplusplus", "cc", "cxx"],
+  java: ["java"],
+  go: ["go"],
+  rust: ["rust", "rs"],
+  php: ["php"],
+  ruby: ["ruby", "rb"],
+  kotlin: ["kotlin", "kt"],
+  swift: ["swift"],
+};
+
+const judge0Cache = { expiresAt: 0, languages: [] };
+
+const normalizeJudge0Token = (value) =>
+  String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "");
+
+const getJudge0BaseUrl = () => (ENV.JUDGE0_API_URL || ENV.JUDGE0_URL || "").replace(/\/$/, "");
+
+const getJudge0Headers = () => {
+  const apiKey = (ENV.JUDGE0_API_KEY || "").trim();
+  const headerName = (ENV.JUDGE0_AUTH_HEADER || "X-Auth-Token").trim();
+  const authType = (ENV.JUDGE0_AUTH_TYPE || "token").trim().toLowerCase();
+
+  if (!apiKey) return { "Content-Type": "application/json" };
+
+  if (authType === "bearer") {
+    return {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    };
+  }
+
+  if (headerName.toLowerCase() === "authorization") {
+    return {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    };
+  }
+
+  return {
+    "Content-Type": "application/json",
+    [headerName]: apiKey,
+  };
+};
+
+const fetchJudge0Languages = async () => {
+  const baseUrl = getJudge0BaseUrl();
+  if (!baseUrl) return [];
+
+  const now = Date.now();
+  if (judge0Cache.languages.length && now < judge0Cache.expiresAt) {
+    return judge0Cache.languages;
+  }
+
+  const response = await fetch(`${baseUrl}/languages`, {
+    method: "GET",
+    headers: getJudge0Headers(),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Judge0 /languages request failed: ${response.status}`);
+  }
+
+  const data = await response.json();
+  judge0Cache.languages = Array.isArray(data) ? data : [];
+  judge0Cache.expiresAt = Date.now() + 5 * 60 * 1000;
+  return judge0Cache.languages;
+};
+
+const resolveJudge0LanguageId = async (languageKey) => {
+  const normalizedLanguage = String(languageKey || "").trim().toLowerCase();
+  if (!normalizedLanguage) return null;
+
+  try {
+    const languages = await fetchJudge0Languages();
+    const aliases = JUDGE0_LANGUAGE_ALIASES[normalizedLanguage] || [normalizedLanguage];
+
+    for (const alias of aliases) {
+      const normalizedAlias = normalizeJudge0Token(alias);
+
+      const match = languages.find((language) => {
+        const languageName = normalizeJudge0Token(language.name || "");
+        const languageLabel = normalizeJudge0Token(language.label || "");
+        const languageLongName = normalizeJudge0Token(language.language || "");
+
+        return (
+          languageName === normalizedAlias ||
+          languageLabel === normalizedAlias ||
+          languageLongName === normalizedAlias ||
+          languageName.includes(normalizedAlias) ||
+          normalizedAlias.includes(languageName)
+        );
+      });
+
+      if (match) return Number(match.id);
+    }
+  } catch (error) {
+    console.error("Judge0 language resolution failed:", error.message);
+  }
+
+  return null;
+};
+
 // Endpoint to expose Judge0 language mappings to frontend
 router.get("/judge0-languages", async (req, res) => {
   try {
-    const JUDGE0_URL = process.env.JUDGE0_URL;
-
     const entries = Object.entries(JUDGE0_LANGUAGE_MAP);
 
-    if (JUDGE0_URL) {
-      const url = `${JUDGE0_URL.replace(/\/$/, "")}/languages`;
-      const resp = await fetch(url);
-      if (!resp.ok) {
-        return res.status(502).json({ message: "Failed to fetch languages from Judge0" });
-      }
-      const judgeLangs = await resp.json();
+    const baseUrl = getJudge0BaseUrl();
+    if (baseUrl) {
+      const judgeLangs = await fetchJudge0Languages();
 
       const result = entries.map(([key, value]) => ({
         key,
@@ -224,7 +346,7 @@ router.post("/run-code", async (req, res) => {
     return res.status(400).json({ error: "No code provided." });
   }
 
-  const detectedLanguage = (language || getLanguageFromFileName(fileName) || "").toLowerCase();
+  const detectedLanguage = String(language || getLanguageFromFileName(fileName) || "").toLowerCase();
 
   if (!detectedLanguage || !SUPPORTED_RUNTIME_LANGUAGES.has(detectedLanguage)) {
     return res.status(400).json({
@@ -232,92 +354,95 @@ router.post("/run-code", async (req, res) => {
     });
   }
 
-  const JUDGE0_URL = process.env.JUDGE0_URL;
+  const baseUrl = getJudge0BaseUrl();
+  if (!baseUrl) {
+    return res.status(500).json({
+      error: "Judge0 API is not configured. Add JUDGE0_API_URL and JUDGE0_API_KEY to the backend environment.",
+    });
+  }
 
   try {
-    if (JUDGE0_URL) {
-      const judge0Language = JUDGE0_LANGUAGE_MAP[detectedLanguage];
-      if (!judge0Language) {
-        return res.status(400).json({ error: `Language ${detectedLanguage} not supported by Judge0 mapping.` });
-      }
-
-      const submissionsUrl = `${JUDGE0_URL.replace(/\/$/, "")}/submissions?base64_encoded=false&wait=true`;
-
-      const response = await fetch(submissionsUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          source_code: code,
-          language_id: judge0Language.id,
-          stdin: stdin || "",
-          cpu_time_limit: 5,
-          memory_limit: 512000,
-        }),
-      });
-
-      if (!response.ok) {
-        const txt = await response.text();
-        return res.status(502).json({ error: `Judge0 error: ${response.status} ${txt}` });
-      }
-
-      const result = await response.json();
-      const output = [result.stdout, result.stderr, result.compile_output, result.message]
-        .filter(Boolean)
-        .join("\n");
-
-      return res.json({
-        output: output || "Execution completed successfully with no output.",
-        raw: result,
+    const judge0LanguageId = await resolveJudge0LanguageId(detectedLanguage);
+    if (!judge0LanguageId) {
+      return res.status(400).json({
+        error: `Language ${detectedLanguage} is not available on the configured Judge0 service.`,
       });
     }
 
-    const tempDir = path.join(process.cwd(), "temp_runs");
-    if (!fs.existsSync(tempDir)) {
-      fs.mkdirSync(tempDir, { recursive: true });
+    const submissionResponse = await fetch(`${baseUrl}/submissions`, {
+      method: "POST",
+      headers: getJudge0Headers(),
+      body: JSON.stringify({
+        source_code: code,
+        language_id: judge0LanguageId,
+        stdin: stdin || "",
+        cpu_time_limit: 5,
+        memory_limit: 512000,
+      }),
+    });
+
+    if (!submissionResponse.ok) {
+      const text = await submissionResponse.text();
+      return res.status(502).json({ error: `Judge0 submission error: ${submissionResponse.status} ${text}` });
     }
 
-    const fileId = crypto.randomBytes(8).toString("hex");
-    let fileNameForRun = "";
-    let runCommand = "";
+    const submissionResult = await submissionResponse.json();
+    const token = submissionResult.token;
 
-    switch (detectedLanguage) {
-      case "python":
-        fileNameForRun = `run_${fileId}.py`;
-        runCommand = `python "${path.join(tempDir, fileNameForRun)}"`;
+    if (!token) {
+      return res.status(502).json({ error: "Judge0 did not return a submission token." });
+    }
+
+    let statusResult = null;
+    const maxAttempts = 25;
+
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      const pollResponse = await fetch(`${baseUrl}/submissions/${token}?base64_encoded=false`, {
+        method: "GET",
+        headers: getJudge0Headers(),
+      });
+
+      if (!pollResponse.ok) {
+        const text = await pollResponse.text();
+        return res.status(502).json({ error: `Judge0 polling error: ${pollResponse.status} ${text}` });
+      }
+
+      statusResult = await pollResponse.json();
+      const statusId = Number(statusResult?.status?.id ?? 0);
+
+      if (statusId >= 3) {
         break;
-      case "javascript":
-      case "typescript":
-        fileNameForRun = `run_${fileId}.js`;
-        runCommand = `node "${path.join(tempDir, fileNameForRun)}"`;
-        break;
-      default:
-        return res.status(400).json({ error: `Language ${detectedLanguage} not supported for local backend execution.` });
-    }
-
-    const filePath = path.join(tempDir, fileNameForRun);
-
-    try {
-      fs.writeFileSync(filePath, code);
-
-      exec(runCommand, { timeout: 5000 }, (error, stdout, stderr) => {
-        fs.unlink(filePath, () => {});
-
-        if (error && error.killed) {
-          return res.json({ output: "Error: Execution timed out (exceeded 5 seconds limit)." });
-        }
-
-        const output = stdout + stderr;
-        return res.json({ output: output || "Execution completed successfully with no output." });
-      });
-    } catch (err) {
-      if (fs.existsSync(filePath)) {
-        fs.unlinkSync(filePath);
       }
-      return res.status(500).json({ error: "Server execution error: " + err.message });
+
+      await new Promise((resolve) => setTimeout(resolve, 250));
     }
-  } catch (err) {
-    console.error("Run-code handler error:", err);
-    return res.status(500).json({ error: "Execution failed: " + err.message });
+
+    if (!statusResult) {
+      return res.status(502).json({ error: "Judge0 execution did not return a result." });
+    }
+
+    const statusId = Number(statusResult?.status?.id ?? 0);
+    const statusLabel = JUDGE0_STATUS_MAP[statusId] || statusResult?.status?.description || "Unknown";
+    const stdout = statusResult.stdout || "";
+    const stderr = statusResult.stderr || "";
+    const compileOutput = statusResult.compile_output || "";
+
+    const success = statusId === 3;
+
+    return res.json({
+      success,
+      status: statusLabel,
+      stdout,
+      stderr,
+      compileOutput,
+      time: statusResult.time ?? null,
+      memory: statusResult.memory ?? null,
+      token,
+      raw: statusResult,
+    });
+  } catch (error) {
+    console.error("Run-code handler error:", error);
+    return res.status(500).json({ error: "Execution failed: " + error.message });
   }
 });
 

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import Editor from "@monaco-editor/react";
 import axios from "axios";
 import { resolveApiUrl } from "../config";
@@ -7,6 +7,7 @@ import {
   SUPPORTED_RUNTIME_LANGUAGES,
   getLanguageFromFileName,
 } from "../languageConfig";
+import { registerLanguageCompletionProvider } from "../languageSuggestions";
 import {
   VscPlay,
   VscPulse,
@@ -38,6 +39,8 @@ function CustomCodeEditor({
   const [output, setOutput] = useState("");
   const [isSaving, setIsSaving] = useState(false);
   const [showPreview, setShowPreview] = useState(false);
+  const monacoRef = useRef(null);
+  const completionDisposablesRef = useRef([]);
 
   // New states for AI Reviewer and Complexity Analyzer
   const [reviewData, setReviewData] = useState(null);
@@ -50,6 +53,18 @@ function CustomCodeEditor({
   const editorLanguage = detectedLanguage || "plaintext";
   const canRunCode = Boolean(detectedLanguage) && SUPPORTED_RUNTIME_LANGUAGES.has(detectedLanguage);
   const detectedLanguageName = detectedLanguage ? LANGUAGE_LABELS[detectedLanguage] : "";
+
+  useEffect(() => {
+    if (!monacoRef.current) return;
+
+    completionDisposablesRef.current.forEach((disposable) => disposable?.dispose?.());
+    completionDisposablesRef.current = registerLanguageCompletionProvider(monacoRef.current, editorLanguage) || [];
+
+    return () => {
+      completionDisposablesRef.current.forEach((disposable) => disposable?.dispose?.());
+      completionDisposablesRef.current = [];
+    };
+  }, [editorLanguage]);
 
   // Give a small visual saving feedback when code updates
   useEffect(() => {
@@ -312,7 +327,12 @@ function CustomCodeEditor({
             height="100%"
             theme="vs-dark"
             language={editorLanguage}
-            value={code}            onChange={(value) => setCode(value || "")}
+            value={code}
+            onMount={(editor, monaco) => {
+              monacoRef.current = monaco;
+              completionDisposablesRef.current = registerLanguageCompletionProvider(monaco, editorLanguage) || [];
+            }}
+            onChange={(value) => setCode(value || "")}
             options={{
               fontSize: 13,
               fontFamily: "'Fira Code', 'Operator Mono', Menlo, Monaco, 'Courier New', monospace",
